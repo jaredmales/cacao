@@ -47,7 +47,13 @@ set(LINKLIBS
 )
 
 if(NOT MKL_FOUND)
-  list(APPEND LINKLIBS lapacke)
+
+    check_library_exists(openblas LAPACKE_sgemlq "" NEED_LAPACKE)
+
+    if(NEED_LAPACKE)
+        list(APPEND LINKLIBS lapacke)
+    endif()
+    
 endif()
 
 
