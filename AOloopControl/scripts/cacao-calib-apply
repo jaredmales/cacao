@@ -53,8 +53,8 @@ echo "runstop acquWFS-${CACAO_LOOPNUMBER}" >> /milk/shm/${CACAO_LOOPNAME}_fpsCTR
 echo "confstop acquWFS-${CACAO_LOOPNUMBER}" >> /milk/shm/${CACAO_LOOPNAME}_fpsCTRL.fifo
 
 # Load CM to shared memory
-milk-FITS2shm "${ARCHDIR}CMmodesWFS.fits" aol${CACAO_LOOPNUMBER}_modesWFS
-milk-FITS2shm "${ARCHDIR}CMmodesDM.fits" aol${CACAO_LOOPNUMBER}_DMmodes
+milk-FITS2shm "${ARCHDIR}CMmodesWFS.fits" aol${CACAO_LOOPNUMBER}_CMmodesWFS
+milk-FITS2shm "${ARCHDIR}CMmodesDM.fits" aol${CACAO_LOOPNUMBER}_CMmodesDM
 
 milk-FITS2shm "${ARCHDIR}zrespM-H.fits" aol${CACAO_LOOPNUMBER}_zrespM
 
