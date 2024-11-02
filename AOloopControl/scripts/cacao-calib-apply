@@ -56,6 +56,7 @@ echo "confstop acquWFS-${CACAO_LOOPNUMBER}" >> /milk/shm/${CACAO_LOOPNAME}_fpsCT
 milk-FITS2shm "${ARCHDIR}CMmodesWFS.fits" aol${CACAO_LOOPNUMBER}_modesWFS
 milk-FITS2shm "${ARCHDIR}CMmodesDM.fits" aol${CACAO_LOOPNUMBER}_DMmodes
 
+milk-FITS2shm "${ARCHDIR}zrespM-H.fits" aol${CACAO_LOOPNUMBER}_zrespM
 
 milk-FITS2shm "${ARCHDIR}wfsref.fits" aol${CACAO_LOOPNUMBER}_wfsref
 milk-FITS2shm "${ARCHDIR}wfsref.fits" aol${CACAO_LOOPNUMBER}_wfsrefc
@@ -80,6 +81,9 @@ sleep 1
 echo "confstart mvalC2dm-${CACAO_LOOPNUMBER}" >> /milk/shm/${CACAO_LOOPNAME}_fpsCTRL.fifo
 sleep 1
 echo "runstart mvalC2dm-${CACAO_LOOPNUMBER}" >> /milk/shm/${CACAO_LOOPNAME}_fpsCTRL.fifo
+
+#zero the gain factors 
+milk-shmim-zero "aol${CACAO_LOOPNUMBER}_mgainfact"
 
 # record this calib as applied
 echo $(pwd)/${ARCHDIR} > $MILK_SHM_DIR/aol${CACAO_LOOPNUMBER}_calib_source.txt

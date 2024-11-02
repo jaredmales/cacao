@@ -69,13 +69,17 @@ echo "Saving to DIRECTORY ${ARCHDIR}"
 
 CONFDIR="conf"
 
+cp ${CONFDIR}/RMmodesWFS/zrespM-H.fits ${ARCHDIR}/zrespM-H.fits
 cp ${CONFDIR}/CMmodesDM/CMmodesDM.fits ${ARCHDIR}/CMmodesDM.fits
 cp ${CONFDIR}/CMmodesWFS/CMmodesWFS.fits ${ARCHDIR}/CMmodesWFS.fits
 cp ${CONFDIR}/RMmodesDM/RMmodesDM.fits ${ARCHDIR}/RMmodesDM.fits
 cp ${CONFDIR}/RMmodesWFS/RMmodesWFS.fits ${ARCHDIR}/RMmodesWFS.fits
 cp ${CONFDIR}/wfsref.fits ${ARCHDIR}/wfsref.fits
 cp ${CONFDIR}/wfsmask.fits ${ARCHDIR}/wfsmask.fits
+cp ${CONFDIR}/wfsmap.fits ${ARCHDIR}/wfsmap.fits
 cp ${CONFDIR}/dmmask.fits ${ARCHDIR}/dmmask.fits 
+cp ${CONFDIR}/dmmap.fits ${ARCHDIR}/dmmap.fits 
+
 cp LOOPNAME ${ARCHDIR}/LOOPNAME
 
 # write out complete path so someone following a symlink can easily track where we are
