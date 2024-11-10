@@ -62,6 +62,10 @@ ARCHDIR="${BASEARCHDIR}${calib}/"
 
 
 mkdir -p ${ARCHDIR}
+mkdir -p ${ARCHDIR}/RMmodesDM
+mkdir -p ${ARCHDIR}/RMmodesWFS
+mkdir -p ${ARCHDIR}/CMmodesDM
+mkdir -p ${ARCHDIR}/CMmodesWFS
 
 echo "Saving to DIRECTORY ${ARCHDIR}"
 
@@ -69,11 +73,11 @@ echo "Saving to DIRECTORY ${ARCHDIR}"
 
 CONFDIR="conf"
 
-cp ${CONFDIR}/RMmodesWFS/zrespM-H.fits ${ARCHDIR}/zrespM-H.fits
-cp ${CONFDIR}/CMmodesDM/CMmodesDM.fits ${ARCHDIR}/CMmodesDM.fits
-cp ${CONFDIR}/CMmodesWFS/CMmodesWFS.fits ${ARCHDIR}/CMmodesWFS.fits
-cp ${CONFDIR}/RMmodesDM/RMmodesDM.fits ${ARCHDIR}/RMmodesDM.fits
-cp ${CONFDIR}/RMmodesWFS/RMmodesWFS.fits ${ARCHDIR}/RMmodesWFS.fits
+cp ${CONFDIR}/RMmodesWFS/zrespM-H.fits ${ARCHDIR}/RMmodesWFS/zrespM-H.fits
+cp ${CONFDIR}/CMmodesDM/CMmodesDM.fits ${ARCHDIR}/CMmodesDM/CMmodesDM.fits
+cp ${CONFDIR}/CMmodesWFS/CMmodesWFS.fits ${ARCHDIR}/CMmodesWFS/CMmodesWFS.fits
+cp ${CONFDIR}/RMmodesDM/RMmodesDM.fits ${ARCHDIR}/RMmodesDM/RMmodesDM.fits
+cp ${CONFDIR}/RMmodesWFS/RMmodesWFS.fits ${ARCHDIR}/RMmodesWFS/RMmodesWFS.fits
 cp ${CONFDIR}/wfsref.fits ${ARCHDIR}/wfsref.fits
 cp ${CONFDIR}/wfsmask.fits ${ARCHDIR}/wfsmask.fits
 cp ${CONFDIR}/wfsmap.fits ${ARCHDIR}/wfsmap.fits
