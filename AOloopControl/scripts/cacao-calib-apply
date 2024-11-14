@@ -1,5 +1,43 @@
 #!/usr/bin/env bash
 
+#######################################################################################
+# Script to apply a CACAO loop calibration previously saved with cacao-calib-archive. 
+# 
+# Usage: cacao-calib-apply cal_name
+#
+# This script must be run in `loop-name-rootdir`. Here cal_name corresponds to a directory 
+# in ``../loop-name-calibs`.  Note this is not the whole path, just the directory name.
+#
+# The following steps are performed:
+# 1. The loop is turned off
+# 2. The loop processes are shutdown, in each case both run and conf:
+#         mvalC2dm
+#         mfilt
+#         wfs2cmodeval
+#         acquWFS
+# 3. The script `./scripts/pre-calib-apply` is run, if it exists.  This is a user script
+#    that can be used for any other desired pre-apply actions on your system. The calib name
+#    and path (relative to rootdir) are passed as arguments.
+# 4. The calibration is loaded into shared memory. This means the files:
+#         CMmodesDM/CMmodesDM.fits
+#         CMmodesWFS/CMmodesWFS.fits
+#         RMmodesWFS/zrespM-H.fits
+#         wfsref.fits
+#         wfsmask.fits
+#         dmmask.fits
+# 5. The loop processes, conf and run, are started in the correct order to be initialized:
+#         acquWFS
+#         wfs2cmodeval
+#         mfilt
+#         mvalC2dm
+# 6. The script `./scripts/post-calib-apply` is run, if it exists.  This is a user script
+#    that can be used for any other desired post-apply actions on your system (e.g. zero all gains).
+#    The calib name and path (relative to rootdir) are passed as arguments.
+# 7. The following files are created:
+#         $MILK_SHM_DIR/aol${CACAO_LOOPNUMBER}_calib_source.txt [contains the directory to calibration files]
+#         $MILK_SHM_DIR/aol${CACAO_LOOPNUMBER}_calib_loaded.txt [contains the time calibration was loaded]
+# 8. A log entry is made.
+############################################################################################################
 
 MSdescr="Apply AO calibration"
 
@@ -39,6 +77,9 @@ echo "Loop ${CACAO_LOOPNUMBER}: Loading calibration from ${ARCHDIR}"
 
 if [[ -d "${ARCHDIR}" ]]; then
 
+#open the loop
+echo "setval mfilt-${CACAO_LOOPNUMBER}.loopON OFF" >> /milk/shm/${CACAO_LOOPNAME}_fpsCTRL.fifo
+
 #Shutdown processes
 echo "runstop mvalC2dm-${CACAO_LOOPNUMBER}" >> /milk/shm/${CACAO_LOOPNAME}_fpsCTRL.fifo
 echo "confstop mvalC2dm-${CACAO_LOOPNUMBER}" >> /milk/shm/${CACAO_LOOPNAME}_fpsCTRL.fifo
@@ -51,6 +92,16 @@ echo "confstop wfs2cmodeval-${CACAO_LOOPNUMBER}" >> /milk/shm/${CACAO_LOOPNAME}_
 
 echo "runstop acquWFS-${CACAO_LOOPNUMBER}" >> /milk/shm/${CACAO_LOOPNAME}_fpsCTRL.fifo
 echo "confstop acquWFS-${CACAO_LOOPNUMBER}" >> /milk/shm/${CACAO_LOOPNAME}_fpsCTRL.fifo
+
+#run pre-apply script if it exists.
+if [ -d "scripts" ]; then
+    cd scripts
+    if [ -f "pre-calib-apply" ]; then
+        echo "running pre-calib-apply"
+        ./pre-calib-apply ${calib} ${ARCHDIR}
+    fi
+    cd ..
+fi
 
 # Load CM to shared memory
 milk-FITS2shm "${ARCHDIR}/CMmodesWFS/CMmodesWFS.fits" aol${CACAO_LOOPNUMBER}_CMmodesWFS
@@ -82,8 +133,14 @@ echo "confstart mvalC2dm-${CACAO_LOOPNUMBER}" >> /milk/shm/${CACAO_LOOPNAME}_fps
 sleep 1
 echo "runstart mvalC2dm-${CACAO_LOOPNUMBER}" >> /milk/shm/${CACAO_LOOPNAME}_fpsCTRL.fifo
 
-#zero the gain factors 
-milk-shmim-zero "aol${CACAO_LOOPNUMBER}_mgainfact"
+if [ -d "scripts" ]; then
+    cd scripts
+    if [ -f "post-calib-apply" ]; then
+        echo "running post-calib-apply"
+        ./post-calib-apply ${calib} ${ARCHDIR}
+    fi
+    cd ..
+fi
 
 # record this calib as applied
 echo $(pwd)/${ARCHDIR} > $MILK_SHM_DIR/aol${CACAO_LOOPNUMBER}_calib_source.txt
