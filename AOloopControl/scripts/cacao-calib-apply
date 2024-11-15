@@ -6,7 +6,8 @@
 # Usage: cacao-calib-apply cal_name
 #
 # This script must be run in `loop-name-rootdir`. Here cal_name corresponds to a directory 
-# in ``../loop-name-calibs`.  Note this is not the whole path, just the directory name.
+# in `../loop-name-calibs`.  Note this is not the whole path, just the directory name including
+# the timestamp appended by cacao-calib-archive.
 #
 # The following steps are performed:
 # 1. The loop is turned off

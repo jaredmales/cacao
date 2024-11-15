@@ -1,5 +1,34 @@
 #!/usr/bin/env bash
 
+#######################################################################################
+# Script to archive a CACAO loop calibration.
+# 
+# Usage: cacao-calib-arhchive cal_name
+#
+# This script must be run in `loop-name-rootdir`. Here cal_name corresponds to a descriptive name
+# of the calibration.  A timestamp will be apended to it, and the result is used to create a directory
+# in ``../loop-name-calibs`.  
+#
+# The time stamp appendage can be suppressed with -u for update.
+#
+# The following files are copied to the cal directory.
+#         conf/CMmodesDM/CMmodesDM.fits
+#         conf/CMmodesWFS/CMmodesWFS.fits
+#         conf/RMmodesWFS/zrespM-H.fits
+#         conf/wfsref.fits
+#         conf/wfsmap.fits
+#         conf/wfsmask.fits
+#         conf/dmmap.fits
+#         conf/dmmask.fits
+#         LOOPNAME
+#
+# Additionally a file named calib_dir.txt is created which holds the directory path (useful for
+# dereferencing symlinks).
+#
+# The file calib_archived.txt is updated with the current time, and a log entry is made.
+#
+##########################################################################################################
+
 MSdescr="Archive AO calibration"
 
 MSextdescr="Copy current filesystem calibration to ../CACAO_LOOPNAME-AOcalibs/<calibname>/ directory
@@ -15,8 +44,6 @@ RequiredFiles=()
 
 
 RequiredDirs=(conf)
-
-
 
 MSarg+=( "calibname:string:calibration name" )
 MSopt+=( "u:update:setupdate::update existing, do not append timestamp" )
