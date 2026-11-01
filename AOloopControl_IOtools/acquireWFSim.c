@@ -419,7 +419,7 @@ __attribute__((hot)) static errno_t compute_function()
     }
 
 
-    struct timespec time1, time2;
+    struct timespec time1, time2, timepub;
     long n_print_timings = 5000;
 
     INSERT_STD_PROCINFO_COMPUTEFUNC_START
@@ -572,11 +572,17 @@ __attribute__((hot)) static errno_t compute_function()
             }
         }
 
+        if(processinfo->loopcnt % n_print_timings == 0)
+        {
+            clock_gettime(CLOCK_MILK, &timepub);
+        }
         processinfo_update_output_stream(processinfo, imgimWFS0.ID);
         if(processinfo->loopcnt % n_print_timings == 0)
         {
             clock_gettime(CLOCK_MILK, &time2);
-            printf("Dark sub to imWFS0: %f us\n", timespec_diff_double(time1, time2) * 1e6);
+            printf("Dark sub to imWFS0: %f us (publish %f us)\n",
+                   timespec_diff_double(time1, time2) * 1e6,
+                   timespec_diff_double(timepub, time2) * 1e6);
         }
 
 
@@ -677,11 +683,17 @@ __attribute__((hot)) static errno_t compute_function()
                        sizeof(float) * sizeWFS);
             }
         }
+        if(processinfo->loopcnt % n_print_timings == 0)
+        {
+            clock_gettime(CLOCK_MILK, &timepub);
+        }
         processinfo_update_output_stream(processinfo, imgimWFS1.ID);
         if(processinfo->loopcnt % n_print_timings == 0)
         {
             clock_gettime(CLOCK_MILK, &time2);
-            printf("Renorm to imWFS1: %f us\n", timespec_diff_double(time1, time2) * 1e6);
+            printf("Renorm to imWFS1: %f us (publish %f us)\n",
+                   timespec_diff_double(time1, time2) * 1e6,
+                   timespec_diff_double(timepub, time2) * 1e6);
         }
 
 
@@ -711,8 +723,6 @@ __attribute__((hot)) static errno_t compute_function()
                         imgwfsrefc.im->array.F[ii];
                 }
             }
-
-            processinfo_update_output_stream(processinfo, imgimWFS2.ID);
         }
         else
         {
@@ -720,13 +730,18 @@ __attribute__((hot)) static errno_t compute_function()
             memcpy(imgimWFS2.im->array.F,
                    imgimWFS1.im->array.F,
                    sizeof(float) * sizeWFS);
-
-            processinfo_update_output_stream(processinfo, imgimWFS2.ID);
         }
         if(processinfo->loopcnt % n_print_timings == 0)
         {
+            clock_gettime(CLOCK_MILK, &timepub);
+        }
+        processinfo_update_output_stream(processinfo, imgimWFS2.ID);
+        if(processinfo->loopcnt % n_print_timings == 0)
+        {
             clock_gettime(CLOCK_MILK, &time2);
-            printf("Refsub to imWFS2: %f us\n", timespec_diff_double(time1, time2) * 1e6);
+            printf("Refsub to imWFS2: %f us (publish %f us)\n",
+                   timespec_diff_double(time1, time2) * 1e6,
+                   timespec_diff_double(timepub, time2) * 1e6);
         }
 
 
