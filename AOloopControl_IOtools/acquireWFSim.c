@@ -71,6 +71,10 @@ static long     fpi_resetWFSrefc;
 static char *wfszposname;
 static long  fpi_wfszposname;
 
+// experimental optimizations, bitmask (see .opt.mode description)
+static int64_t *optmode;
+static long     fpi_optmode;
+
 
 
 static CLICMDARGDEF farg[] =
@@ -245,6 +249,15 @@ static CLICMDARGDEF farg[] =
         CLIARG_VISIBLE_DEFAULT,
         (void **) &wfszposname,
         &fpi_wfszposname
+    },
+    {
+        CLIARG_INT64,
+        ".opt.mode",
+        "1: prefetch wfsrefc/imWFS2 at frame start, 2: fuse normalize+refsub",
+        "0",
+        CLIARG_HIDDEN_DEFAULT,
+        (void **) &optmode,
+        &fpi_optmode
     }
 };
 
@@ -273,6 +286,7 @@ static errno_t customCONFsetup()
         data.fpsptr->parray[fpi_resetWFSrefc].fpflag     |= FPFLAG_WRITERUN;
         data.fpsptr->parray[fpi_WFSrefcgain].fpflag      |= FPFLAG_WRITERUN;
         data.fpsptr->parray[fpi_WFSrefcmult].fpflag      |= FPFLAG_WRITERUN;
+        data.fpsptr->parray[fpi_optmode].fpflag          |= FPFLAG_WRITERUN;
 
         // reset WFS ave at startup
         data.fpsptr->parray[fpi_resetWFSrefc].fpflag |= FPFLAG_ONOFF;
@@ -438,6 +452,22 @@ __attribute__((hot)) static errno_t compute_function()
             clock_gettime(CLOCK_MILK, &time1);
         }
 
+        if(*optmode & 1)
+        {
+            // claim imWFS2 for writing and fetch wfsrefc (one 64-byte line
+            // per 16 floats) so the misses overlap the earlier passes
+            float *pf2 = imgimWFS2.im->array.F;
+            float *pfr = (imgwfsrefc.ID != -1) ? imgwfsrefc.im->array.F : NULL;
+            for(uint64_t ii = 0; ii < sizeWFS; ii += 16)
+            {
+                __builtin_prefetch(pf2 + ii, 1, 3);
+                if(pfr != NULL)
+                {
+                    __builtin_prefetch(pfr + ii, 0, 3);
+                }
+            }
+        }
+
         void *ptrv = NULL;
         switch(WFSatype)
         {
@@ -598,6 +628,9 @@ __attribute__((hot)) static errno_t compute_function()
         // ===========================================
         int status_normalize = 0;
 
+        // fused pass writes imWFS1 and imWFS2 together, skipping the refsub pass
+        int fusedrefsub = 0;
+
         if(processinfo->loopcnt % n_print_timings == 0)
         {
             clock_gettime(CLOCK_MILK, &time1);
@@ -641,10 +674,44 @@ __attribute__((hot)) static errno_t compute_function()
             }
             double totalinv       = 1.0 / (*fluxtotal + *WFSnormfloor * sizeWFS);
 
+            fusedrefsub = (*optmode & 2) &&
+                          (data.fpsptr->parray[fpi_compWFSrefsub].fpflag & FPFLAG_ONOFF) &&
+                          (imgwfsrefc.ID != -1);
 
 
+            if(fusedrefsub)
+            {
+                // single-precision scale: differs from the separate passes at float rounding
+                const float *__restrict w0   = imgimWFS0.im->array.F;
+                const float *__restrict rc   = imgwfsrefc.im->array.F;
+                float *__restrict       w1   = imgimWFS1.im->array.F;
+                float *__restrict       w2   = imgimWFS2.im->array.F;
+                const float             tinv = totalinv;
 
-            if((imgwfsmask.ID != -1)
+                imgimWFS2.md->write = 1;
+
+                if((imgwfsmask.ID != -1)
+                        && (data.fpsptr->parray[fpi_compWFSmask].fpflag & FPFLAG_ONOFF))
+                {
+                    const float *__restrict mk = imgwfsmask.im->array.F;
+                    for(uint64_t ii = 0; ii < sizeWFS; ii++)
+                    {
+                        float v = w0[ii] * tinv * mk[ii];
+                        w1[ii]  = v;
+                        w2[ii]  = v - rc[ii];
+                    }
+                }
+                else
+                {
+                    for(uint64_t ii = 0; ii < sizeWFS; ii++)
+                    {
+                        float v = w0[ii] * tinv;
+                        w1[ii]  = v;
+                        w2[ii]  = v - rc[ii];
+                    }
+                }
+            }
+            else if((imgwfsmask.ID != -1)
                     && (data.fpsptr->parray[fpi_compWFSmask].fpflag & FPFLAG_ONOFF))
             {
                 for(uint64_t ii = 0; ii < sizeWFS; ii++)
@@ -713,7 +780,7 @@ __attribute__((hot)) static errno_t compute_function()
             status_refsub = 1;
             imgimWFS2.md->write = 1;
 
-            if(imgwfsrefc.ID != -1)
+            if(imgwfsrefc.ID != -1 && !fusedrefsub)
             {
 
                 for(uint64_t ii = 0; ii < sizeWFS; ii++)
