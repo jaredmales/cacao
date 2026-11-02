@@ -71,13 +71,13 @@ static long     fpi_compWFSrefc;
 static int64_t *resetWFSrefc;
 static long     fpi_resetWFSrefc;
 
+// write imWFS2 with non-temporal stores
+static int64_t *compWFSrefsubNT;
+static long     fpi_compWFSrefsubNT;
+
 
 static char *wfszposname;
 static long  fpi_wfszposname;
-
-// experimental optimizations, bitmask (see .opt.mode description)
-static int64_t *optmode;
-static long     fpi_optmode;
 
 
 
@@ -246,6 +246,15 @@ static CLICMDARGDEF farg[] =
         &fpi_resetWFSrefc
     },
     {
+        CLIARG_ONOFF,
+        ".comp.WFSrefsubNT",
+        "non-temporal imWFS2 stores (faster when a GPU consumes imWFS2)",
+        "1",
+        CLIARG_HIDDEN_DEFAULT,
+        (void **) &compWFSrefsubNT,
+        &fpi_compWFSrefsubNT
+    },
+    {
         CLIARG_STREAM,
         ".wfszpo",
         "Wavefront sensor zero point offset",
@@ -253,15 +262,6 @@ static CLICMDARGDEF farg[] =
         CLIARG_VISIBLE_DEFAULT,
         (void **) &wfszposname,
         &fpi_wfszposname
-    },
-    {
-        CLIARG_INT64,
-        ".opt.mode",
-        "1: prefetch wfsrefc/imWFS2 at frame start, 2: fuse normalize+refsub, 4: streaming refsub stores",
-        "0",
-        CLIARG_HIDDEN_DEFAULT,
-        (void **) &optmode,
-        &fpi_optmode
     }
 };
 
@@ -288,9 +288,9 @@ static errno_t customCONFsetup()
         data.fpsptr->parray[fpi_compWFSsigav].fpflag     |= FPFLAG_WRITERUN;
         data.fpsptr->parray[fpi_compWFSrefc].fpflag      |= FPFLAG_WRITERUN;
         data.fpsptr->parray[fpi_resetWFSrefc].fpflag     |= FPFLAG_WRITERUN;
+        data.fpsptr->parray[fpi_compWFSrefsubNT].fpflag  |= FPFLAG_WRITERUN;
         data.fpsptr->parray[fpi_WFSrefcgain].fpflag      |= FPFLAG_WRITERUN;
         data.fpsptr->parray[fpi_WFSrefcmult].fpflag      |= FPFLAG_WRITERUN;
-        data.fpsptr->parray[fpi_optmode].fpflag          |= FPFLAG_WRITERUN;
 
         // reset WFS ave at startup
         data.fpsptr->parray[fpi_resetWFSrefc].fpflag |= FPFLAG_ONOFF;
@@ -319,8 +319,9 @@ static errno_t help_function()
 }
 
 
-// out = in - ref with non-temporal stores, so out's cache lines are not
-// read for ownership before being overwritten (.opt.mode & 4)
+// out = in - ref with non-temporal stores. When another agent (e.g. GPU DMA)
+// reads out every frame, its cache lines are no longer owned at the next write,
+// and ordinary stores stall reading each line for ownership first.
 static void refsub_stream(float *__restrict out,
                           const float *__restrict in,
                           const float *__restrict ref,
@@ -484,22 +485,6 @@ __attribute__((hot)) static errno_t compute_function()
             clock_gettime(CLOCK_MILK, &time1);
         }
 
-        if(*optmode & 1)
-        {
-            // claim imWFS2 for writing and fetch wfsrefc (one 64-byte line
-            // per 16 floats) so the misses overlap the earlier passes
-            float *pf2 = imgimWFS2.im->array.F;
-            float *pfr = (imgwfsrefc.ID != -1) ? imgwfsrefc.im->array.F : NULL;
-            for(uint64_t ii = 0; ii < sizeWFS; ii += 16)
-            {
-                __builtin_prefetch(pf2 + ii, 1, 3);
-                if(pfr != NULL)
-                {
-                    __builtin_prefetch(pfr + ii, 0, 3);
-                }
-            }
-        }
-
         void *ptrv = NULL;
         switch(WFSatype)
         {
@@ -660,9 +645,6 @@ __attribute__((hot)) static errno_t compute_function()
         // ===========================================
         int status_normalize = 0;
 
-        // fused pass writes imWFS1 and imWFS2 together, skipping the refsub pass
-        int fusedrefsub = 0;
-
         if(processinfo->loopcnt % n_print_timings == 0)
         {
             clock_gettime(CLOCK_MILK, &time1);
@@ -706,44 +688,10 @@ __attribute__((hot)) static errno_t compute_function()
             }
             double totalinv       = 1.0 / (*fluxtotal + *WFSnormfloor * sizeWFS);
 
-            fusedrefsub = (*optmode & 2) &&
-                          (data.fpsptr->parray[fpi_compWFSrefsub].fpflag & FPFLAG_ONOFF) &&
-                          (imgwfsrefc.ID != -1);
 
 
-            if(fusedrefsub)
-            {
-                // single-precision scale: differs from the separate passes at float rounding
-                const float *__restrict w0   = imgimWFS0.im->array.F;
-                const float *__restrict rc   = imgwfsrefc.im->array.F;
-                float *__restrict       w1   = imgimWFS1.im->array.F;
-                float *__restrict       w2   = imgimWFS2.im->array.F;
-                const float             tinv = totalinv;
 
-                imgimWFS2.md->write = 1;
-
-                if((imgwfsmask.ID != -1)
-                        && (data.fpsptr->parray[fpi_compWFSmask].fpflag & FPFLAG_ONOFF))
-                {
-                    const float *__restrict mk = imgwfsmask.im->array.F;
-                    for(uint64_t ii = 0; ii < sizeWFS; ii++)
-                    {
-                        float v = w0[ii] * tinv * mk[ii];
-                        w1[ii]  = v;
-                        w2[ii]  = v - rc[ii];
-                    }
-                }
-                else
-                {
-                    for(uint64_t ii = 0; ii < sizeWFS; ii++)
-                    {
-                        float v = w0[ii] * tinv;
-                        w1[ii]  = v;
-                        w2[ii]  = v - rc[ii];
-                    }
-                }
-            }
-            else if((imgwfsmask.ID != -1)
+            if((imgwfsmask.ID != -1)
                     && (data.fpsptr->parray[fpi_compWFSmask].fpflag & FPFLAG_ONOFF))
             {
                 for(uint64_t ii = 0; ii < sizeWFS; ii++)
@@ -812,14 +760,15 @@ __attribute__((hot)) static errno_t compute_function()
             status_refsub = 1;
             imgimWFS2.md->write = 1;
 
-            if(imgwfsrefc.ID != -1 && !fusedrefsub && (*optmode & 4))
+            if(imgwfsrefc.ID != -1 &&
+                    (data.fpsptr->parray[fpi_compWFSrefsubNT].fpflag & FPFLAG_ONOFF))
             {
                 refsub_stream(imgimWFS2.im->array.F,
                               imgimWFS1.im->array.F,
                               imgwfsrefc.im->array.F,
                               sizeWFS);
             }
-            else if(imgwfsrefc.ID != -1 && !fusedrefsub)
+            else if(imgwfsrefc.ID != -1)
             {
 
                 for(uint64_t ii = 0; ii < sizeWFS; ii++)
