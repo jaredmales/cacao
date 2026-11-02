@@ -248,8 +248,8 @@ static CLICMDARGDEF farg[] =
     {
         CLIARG_ONOFF,
         ".comp.WFSrefsubNT",
-        "non-temporal imWFS2 stores (faster when a GPU consumes imWFS2)",
-        "1",
+        "non-temporal imWFS2 stores (faster when other CPUs read imWFS2)",
+        "0",
         CLIARG_HIDDEN_DEFAULT,
         (void **) &compWFSrefsubNT,
         &fpi_compWFSrefsubNT
@@ -319,9 +319,10 @@ static errno_t help_function()
 }
 
 
-// out = in - ref with non-temporal stores. When another agent (e.g. GPU DMA)
-// reads out every frame, its cache lines are no longer owned at the next write,
-// and ordinary stores stall reading each line for ownership first.
+// out = in - ref with non-temporal stores. When processes on other CPUs read out
+// every frame, its cache lines are no longer owned at the next write, and ordinary
+// stores stall reading each line for ownership first. When only processes on this
+// CPU read it, ordinary stores are faster and leave out in cache for them.
 static void refsub_stream(float *__restrict out,
                           const float *__restrict in,
                           const float *__restrict ref,
