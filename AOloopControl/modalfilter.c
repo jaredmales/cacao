@@ -817,9 +817,12 @@ static errno_t help_function()
  *
  *
  *
+ * Marked hot: the error exits ahead of the processing loop make GCC's static
+ * profile treat the per-frame loops as cold, which disables their vectorization.
+ *
  * @return errno_t
  */
-static errno_t compute_function()
+__attribute__((hot)) static errno_t compute_function()
 {
     DEBUG_TRACE_FSTART();
 
