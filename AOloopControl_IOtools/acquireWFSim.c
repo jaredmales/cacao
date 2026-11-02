@@ -7,6 +7,10 @@
 
 #include <math.h>
 
+#ifdef __AVX__
+#include <immintrin.h>
+#endif
+
 #include "CommandLineInterface/CLIcore.h"
 
 // Local variables pointers
@@ -253,7 +257,7 @@ static CLICMDARGDEF farg[] =
     {
         CLIARG_INT64,
         ".opt.mode",
-        "1: prefetch wfsrefc/imWFS2 at frame start, 2: fuse normalize+refsub",
+        "1: prefetch wfsrefc/imWFS2 at frame start, 2: fuse normalize+refsub, 4: streaming refsub stores",
         "0",
         CLIARG_HIDDEN_DEFAULT,
         (void **) &optmode,
@@ -312,6 +316,34 @@ static CLICMDDATA CLIcmddata =
 static errno_t help_function()
 {
     return RETURN_SUCCESS;
+}
+
+
+// out = in - ref with non-temporal stores, so out's cache lines are not
+// read for ownership before being overwritten (.opt.mode & 4)
+static void refsub_stream(float *__restrict out,
+                          const float *__restrict in,
+                          const float *__restrict ref,
+                          uint64_t n)
+{
+    uint64_t ii = 0;
+#ifdef __AVX__
+    for(; ii < n && ((uintptr_t)(out + ii) & 31); ii++)
+    {
+        out[ii] = in[ii] - ref[ii];
+    }
+    for(; ii + 8 <= n; ii += 8)
+    {
+        _mm256_stream_ps(out + ii,
+                         _mm256_sub_ps(_mm256_loadu_ps(in + ii),
+                                       _mm256_loadu_ps(ref + ii)));
+    }
+    _mm_sfence();
+#endif
+    for(; ii < n; ii++)
+    {
+        out[ii] = in[ii] - ref[ii];
+    }
 }
 
 
@@ -780,7 +812,14 @@ __attribute__((hot)) static errno_t compute_function()
             status_refsub = 1;
             imgimWFS2.md->write = 1;
 
-            if(imgwfsrefc.ID != -1 && !fusedrefsub)
+            if(imgwfsrefc.ID != -1 && !fusedrefsub && (*optmode & 4))
+            {
+                refsub_stream(imgimWFS2.im->array.F,
+                              imgimWFS1.im->array.F,
+                              imgwfsrefc.im->array.F,
+                              sizeWFS);
+            }
+            else if(imgwfsrefc.ID != -1 && !fusedrefsub)
             {
 
                 for(uint64_t ii = 0; ii < sizeWFS; ii++)
