@@ -7,6 +7,10 @@
 
 #include <math.h>
 
+#ifdef __AVX__
+#include <immintrin.h>
+#endif
+
 #include "CommandLineInterface/CLIcore.h"
 
 // Local variables pointers
@@ -66,6 +70,10 @@ static long     fpi_compWFSrefc;
 // reset aolX_wfsrefc to aolX_wfsref
 static int64_t *resetWFSrefc;
 static long     fpi_resetWFSrefc;
+
+// write imWFS2 with non-temporal stores
+static int64_t *compWFSrefsubNT;
+static long     fpi_compWFSrefsubNT;
 
 
 static char *wfszposname;
@@ -238,6 +246,15 @@ static CLICMDARGDEF farg[] =
         &fpi_resetWFSrefc
     },
     {
+        CLIARG_ONOFF,
+        ".comp.WFSrefsubNT",
+        "non-temporal imWFS2 stores (faster when other CPUs read imWFS2)",
+        "0",
+        CLIARG_HIDDEN_DEFAULT,
+        (void **) &compWFSrefsubNT,
+        &fpi_compWFSrefsubNT
+    },
+    {
         CLIARG_STREAM,
         ".wfszpo",
         "Wavefront sensor zero point offset",
@@ -271,6 +288,7 @@ static errno_t customCONFsetup()
         data.fpsptr->parray[fpi_compWFSsigav].fpflag     |= FPFLAG_WRITERUN;
         data.fpsptr->parray[fpi_compWFSrefc].fpflag      |= FPFLAG_WRITERUN;
         data.fpsptr->parray[fpi_resetWFSrefc].fpflag     |= FPFLAG_WRITERUN;
+        data.fpsptr->parray[fpi_compWFSrefsubNT].fpflag  |= FPFLAG_WRITERUN;
         data.fpsptr->parray[fpi_WFSrefcgain].fpflag      |= FPFLAG_WRITERUN;
         data.fpsptr->parray[fpi_WFSrefcmult].fpflag      |= FPFLAG_WRITERUN;
 
@@ -298,6 +316,36 @@ static CLICMDDATA CLIcmddata =
 static errno_t help_function()
 {
     return RETURN_SUCCESS;
+}
+
+
+// out = in - ref with non-temporal stores. When processes on other CPUs read out
+// every frame, its cache lines are no longer owned at the next write, and ordinary
+// stores stall reading each line for ownership first. When only processes on this
+// CPU read it, ordinary stores are faster and leave out in cache for them.
+static void refsub_stream(float *__restrict out,
+                          const float *__restrict in,
+                          const float *__restrict ref,
+                          uint64_t n)
+{
+    uint64_t ii = 0;
+#ifdef __AVX__
+    for(; ii < n && ((uintptr_t)(out + ii) & 31); ii++)
+    {
+        out[ii] = in[ii] - ref[ii];
+    }
+    for(; ii + 8 <= n; ii += 8)
+    {
+        _mm256_stream_ps(out + ii,
+                         _mm256_sub_ps(_mm256_loadu_ps(in + ii),
+                                       _mm256_loadu_ps(ref + ii)));
+    }
+    _mm_sfence();
+#endif
+    for(; ii < n; ii++)
+    {
+        out[ii] = in[ii] - ref[ii];
+    }
 }
 
 
@@ -713,7 +761,15 @@ __attribute__((hot)) static errno_t compute_function()
             status_refsub = 1;
             imgimWFS2.md->write = 1;
 
-            if(imgwfsrefc.ID != -1)
+            if(imgwfsrefc.ID != -1 &&
+                    (data.fpsptr->parray[fpi_compWFSrefsubNT].fpflag & FPFLAG_ONOFF))
+            {
+                refsub_stream(imgimWFS2.im->array.F,
+                              imgimWFS1.im->array.F,
+                              imgwfsrefc.im->array.F,
+                              sizeWFS);
+            }
+            else if(imgwfsrefc.ID != -1)
             {
 
                 for(uint64_t ii = 0; ii < sizeWFS; ii++)
