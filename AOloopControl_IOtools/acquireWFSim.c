@@ -7,6 +7,10 @@
 
 #include <math.h>
 
+#ifdef __AVX__
+#include <immintrin.h>
+#endif
+
 #include "CommandLineInterface/CLIcore.h"
 
 // Local variables pointers
@@ -66,6 +70,10 @@ static long     fpi_compWFSrefc;
 // reset aolX_wfsrefc to aolX_wfsref
 static int64_t *resetWFSrefc;
 static long     fpi_resetWFSrefc;
+
+// write imWFS2 with non-temporal stores
+static int64_t *compWFSrefsubNT;
+static long     fpi_compWFSrefsubNT;
 
 
 static char *wfszposname;
@@ -238,6 +246,15 @@ static CLICMDARGDEF farg[] =
         &fpi_resetWFSrefc
     },
     {
+        CLIARG_ONOFF,
+        ".comp.WFSrefsubNT",
+        "non-temporal imWFS2 stores (faster when other CPUs read imWFS2)",
+        "0",
+        CLIARG_HIDDEN_DEFAULT,
+        (void **) &compWFSrefsubNT,
+        &fpi_compWFSrefsubNT
+    },
+    {
         CLIARG_STREAM,
         ".wfszpo",
         "Wavefront sensor zero point offset",
@@ -271,6 +288,7 @@ static errno_t customCONFsetup()
         data.fpsptr->parray[fpi_compWFSsigav].fpflag     |= FPFLAG_WRITERUN;
         data.fpsptr->parray[fpi_compWFSrefc].fpflag      |= FPFLAG_WRITERUN;
         data.fpsptr->parray[fpi_resetWFSrefc].fpflag     |= FPFLAG_WRITERUN;
+        data.fpsptr->parray[fpi_compWFSrefsubNT].fpflag  |= FPFLAG_WRITERUN;
         data.fpsptr->parray[fpi_WFSrefcgain].fpflag      |= FPFLAG_WRITERUN;
         data.fpsptr->parray[fpi_WFSrefcmult].fpflag      |= FPFLAG_WRITERUN;
 
@@ -301,7 +319,39 @@ static errno_t help_function()
 }
 
 
-static errno_t compute_function()
+// out = in - ref with non-temporal stores. When processes on other CPUs read out
+// every frame, its cache lines are no longer owned at the next write, and ordinary
+// stores stall reading each line for ownership first. When only processes on this
+// CPU read it, ordinary stores are faster and leave out in cache for them.
+static void refsub_stream(float *__restrict out,
+                          const float *__restrict in,
+                          const float *__restrict ref,
+                          uint64_t n)
+{
+    uint64_t ii = 0;
+#ifdef __AVX__
+    for(; ii < n && ((uintptr_t)(out + ii) & 31); ii++)
+    {
+        out[ii] = in[ii] - ref[ii];
+    }
+    for(; ii + 8 <= n; ii += 8)
+    {
+        _mm256_stream_ps(out + ii,
+                         _mm256_sub_ps(_mm256_loadu_ps(in + ii),
+                                       _mm256_loadu_ps(ref + ii)));
+    }
+    _mm_sfence();
+#endif
+    for(; ii < n; ii++)
+    {
+        out[ii] = in[ii] - ref[ii];
+    }
+}
+
+
+// hot: the error exits ahead of the processing loop make GCC's static profile
+// treat the per-frame loops as cold, which disables their vectorization
+__attribute__((hot)) static errno_t compute_function()
 {
     DEBUG_TRACE_FSTART();
 
@@ -358,7 +408,7 @@ static errno_t compute_function()
     {
         // if wfsmask created here, initialize it to 1
         printf("INITIALIZING wfsmask to 1\n");
-        for(uint64_t ii; ii < imgwfsmask.md->nelement; ii++)
+        for(uint64_t ii = 0; ii < imgwfsmask.md->nelement; ii++)
         {
             imgwfsmask.im->array.F[ii] = 1.0;
         }
@@ -417,7 +467,7 @@ static errno_t compute_function()
     }
 
 
-    struct timespec time1, time2;
+    struct timespec time1, time2, timepub;
     long n_print_timings = 5000;
 
     INSERT_STD_PROCINFO_COMPUTEFUNC_START
@@ -570,11 +620,17 @@ static errno_t compute_function()
             }
         }
 
+        if(processinfo->loopcnt % n_print_timings == 0)
+        {
+            clock_gettime(CLOCK_MILK, &timepub);
+        }
         processinfo_update_output_stream(processinfo, imgimWFS0.ID);
         if(processinfo->loopcnt % n_print_timings == 0)
         {
             clock_gettime(CLOCK_MILK, &time2);
-            printf("Dark sub to imWFS0: %f us\n", timespec_diff_double(time1, time2) * 1e6);
+            printf("Dark sub to imWFS0: %f us (publish %f us)\n",
+                   timespec_diff_double(time1, time2) * 1e6,
+                   timespec_diff_double(timepub, time2) * 1e6);
         }
 
 
@@ -675,11 +731,17 @@ static errno_t compute_function()
                        sizeof(float) * sizeWFS);
             }
         }
+        if(processinfo->loopcnt % n_print_timings == 0)
+        {
+            clock_gettime(CLOCK_MILK, &timepub);
+        }
         processinfo_update_output_stream(processinfo, imgimWFS1.ID);
         if(processinfo->loopcnt % n_print_timings == 0)
         {
             clock_gettime(CLOCK_MILK, &time2);
-            printf("Renorm to imWFS1: %f us\n", timespec_diff_double(time1, time2) * 1e6);
+            printf("Renorm to imWFS1: %f us (publish %f us)\n",
+                   timespec_diff_double(time1, time2) * 1e6,
+                   timespec_diff_double(timepub, time2) * 1e6);
         }
 
 
@@ -699,7 +761,15 @@ static errno_t compute_function()
             status_refsub = 1;
             imgimWFS2.md->write = 1;
 
-            if(imgwfsrefc.ID != -1)
+            if(imgwfsrefc.ID != -1 &&
+                    (data.fpsptr->parray[fpi_compWFSrefsubNT].fpflag & FPFLAG_ONOFF))
+            {
+                refsub_stream(imgimWFS2.im->array.F,
+                              imgimWFS1.im->array.F,
+                              imgwfsrefc.im->array.F,
+                              sizeWFS);
+            }
+            else if(imgwfsrefc.ID != -1)
             {
 
                 for(uint64_t ii = 0; ii < sizeWFS; ii++)
@@ -709,8 +779,6 @@ static errno_t compute_function()
                         imgwfsrefc.im->array.F[ii];
                 }
             }
-
-            processinfo_update_output_stream(processinfo, imgimWFS2.ID);
         }
         else
         {
@@ -718,13 +786,18 @@ static errno_t compute_function()
             memcpy(imgimWFS2.im->array.F,
                    imgimWFS1.im->array.F,
                    sizeof(float) * sizeWFS);
-
-            processinfo_update_output_stream(processinfo, imgimWFS2.ID);
         }
         if(processinfo->loopcnt % n_print_timings == 0)
         {
+            clock_gettime(CLOCK_MILK, &timepub);
+        }
+        processinfo_update_output_stream(processinfo, imgimWFS2.ID);
+        if(processinfo->loopcnt % n_print_timings == 0)
+        {
             clock_gettime(CLOCK_MILK, &time2);
-            printf("Refsub to imWFS2: %f us\n", timespec_diff_double(time1, time2) * 1e6);
+            printf("Refsub to imWFS2: %f us (publish %f us)\n",
+                   timespec_diff_double(time1, time2) * 1e6,
+                   timespec_diff_double(timepub, time2) * 1e6);
         }
 
 
