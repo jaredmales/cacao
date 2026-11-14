@@ -75,6 +75,14 @@ static long     fpi_resetWFSrefc;
 static int64_t *compWFSrefsubNT;
 static long     fpi_compWFSrefsubNT;
 
+// copy imWFS2 to imWFS2pub for readers outside the loop
+static int64_t *compWFSpub;
+static long     fpi_compWFSpub;
+
+// write imWFS2pub with non-temporal stores
+static int64_t *compWFSpubNT;
+static long     fpi_compWFSpubNT;
+
 
 static char *wfszposname;
 static long  fpi_wfszposname;
@@ -255,6 +263,24 @@ static CLICMDARGDEF farg[] =
         &fpi_compWFSrefsubNT
     },
     {
+        CLIARG_ONOFF,
+        ".comp.WFSpub",
+        "copy imWFS2 to imWFS2pub after publishing, for readers outside the loop",
+        "0",
+        CLIARG_HIDDEN_DEFAULT,
+        (void **) &compWFSpub,
+        &fpi_compWFSpub
+    },
+    {
+        CLIARG_ONOFF,
+        ".comp.WFSpubNT",
+        "non-temporal imWFS2pub stores",
+        "0",
+        CLIARG_HIDDEN_DEFAULT,
+        (void **) &compWFSpubNT,
+        &fpi_compWFSpubNT
+    },
+    {
         CLIARG_STREAM,
         ".wfszpo",
         "Wavefront sensor zero point offset",
@@ -289,6 +315,8 @@ static errno_t customCONFsetup()
         data.fpsptr->parray[fpi_compWFSrefc].fpflag      |= FPFLAG_WRITERUN;
         data.fpsptr->parray[fpi_resetWFSrefc].fpflag     |= FPFLAG_WRITERUN;
         data.fpsptr->parray[fpi_compWFSrefsubNT].fpflag  |= FPFLAG_WRITERUN;
+        data.fpsptr->parray[fpi_compWFSpub].fpflag       |= FPFLAG_WRITERUN;
+        data.fpsptr->parray[fpi_compWFSpubNT].fpflag     |= FPFLAG_WRITERUN;
         data.fpsptr->parray[fpi_WFSrefcgain].fpflag      |= FPFLAG_WRITERUN;
         data.fpsptr->parray[fpi_WFSrefcmult].fpflag      |= FPFLAG_WRITERUN;
 
@@ -348,6 +376,29 @@ static void refsub_stream(float *__restrict out,
     }
 }
 
+// out = in with non-temporal stores, see refsub_stream.
+static void copy_stream(float *__restrict out,
+                        const float *__restrict in,
+                        uint64_t n)
+{
+    uint64_t ii = 0;
+#ifdef __AVX__
+    for(; ii < n && ((uintptr_t)(out + ii) & 31); ii++)
+    {
+        out[ii] = in[ii];
+    }
+    for(; ii + 8 <= n; ii += 8)
+    {
+        _mm256_stream_ps(out + ii, _mm256_loadu_ps(in + ii));
+    }
+    _mm_sfence();
+#endif
+    for(; ii < n; ii++)
+    {
+        out[ii] = in[ii];
+    }
+}
+
 
 // hot: the error exits ahead of the processing loop make GCC's static profile
 // treat the per-frame loops as cold, which disables their vectorization
@@ -373,6 +424,7 @@ __attribute__((hot)) static errno_t compute_function()
     IMGID imgimWFS0;
     IMGID imgimWFS1;
     IMGID imgimWFS2;
+    IMGID imgimWFS2pub;
     IMGID imgimWFS3;
     IMGID imgwfsref;
     IMGID imgwfsrefc;
@@ -388,6 +440,11 @@ __attribute__((hot)) static errno_t compute_function()
 
         WRITE_IMAGENAME(name, "aol%u_imWFS2", *AOloopindex);
         imgimWFS2 = stream_connect_create_2Df32(name, sizexWFS, sizeyWFS);
+
+        // copy of imWFS2 for readers outside the loop, so that only this
+        // CPU and the MVM touch imWFS2 (see .comp.WFSpub)
+        WRITE_IMAGENAME(name, "aol%u_imWFS2pub", *AOloopindex);
+        imgimWFS2pub = stream_connect_create_2Df32(name, sizexWFS, sizeyWFS);
 
         WRITE_IMAGENAME(name, "aol%u_imWFS3", *AOloopindex);
         imgimWFS3 = stream_connect_create_2Df32(name, sizexWFS, sizeyWFS);
@@ -798,6 +855,49 @@ __attribute__((hot)) static errno_t compute_function()
             printf("Refsub to imWFS2: %f us (publish %f us)\n",
                    timespec_diff_double(time1, time2) * 1e6,
                    timespec_diff_double(timepub, time2) * 1e6);
+        }
+
+
+
+        // ===========================================
+        // COPY imWFS2 -> imWFS2pub
+        // ===========================================
+        // Readers on other CPUs of imWFS2 itself take its cache lines, and the
+        // next frame's stores must take them back. They read imWFS2pub instead.
+        // When the MVM shares this CPU at a higher priority, it preempts this
+        // process as soon as imWFS2 is posted, so the copy only runs while the
+        // MVM is not using the CPU.
+
+        if(data.fpsptr->parray[fpi_compWFSpub].fpflag & FPFLAG_ONOFF)
+        {
+            if(processinfo->loopcnt % n_print_timings == 0)
+            {
+                clock_gettime(CLOCK_MILK, &time1);
+            }
+
+            imgimWFS2pub.md->write = 1;
+
+            if(data.fpsptr->parray[fpi_compWFSpubNT].fpflag & FPFLAG_ONOFF)
+            {
+                copy_stream(imgimWFS2pub.im->array.F,
+                            imgimWFS2.im->array.F,
+                            sizeWFS);
+            }
+            else
+            {
+                memcpy(imgimWFS2pub.im->array.F,
+                       imgimWFS2.im->array.F,
+                       sizeof(float) * sizeWFS);
+            }
+
+            ImageStreamIO_UpdateIm_atime(imgimWFS2pub.im, &imgimWFS2.md->atime);
+
+            if(processinfo->loopcnt % n_print_timings == 0)
+            {
+                clock_gettime(CLOCK_MILK, &time2);
+                printf("Copy to imWFS2pub: %f us\n",
+                       timespec_diff_double(time1, time2) * 1e6);
+            }
         }
 
 
